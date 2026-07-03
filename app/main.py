@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         run_scraper_once,
         "interval",
-        minutes=settings.NGX_SCRAPE_INTERVAL_MINUTES,
+        minutes=60,  # Live price update every 60 minutes from NGX equities price list
         id="ngx_scraper",
         replace_existing=True,
     )
