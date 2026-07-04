@@ -62,8 +62,7 @@ async def create_tables():
 
 async def run_migrations():
     """
-    Run Alembic migrations programmatically on startup.
-    Falls back to create_tables() if Alembic is not available or has no migrations.
+    Run Alembic migrations then ensure all tables exist via create_all (idempotent).
     """
     try:
         import subprocess
@@ -77,8 +76,8 @@ async def run_migrations():
         if result.returncode == 0:
             logger.info("Alembic migrations applied: %s", result.stdout.strip() or "up to date")
         else:
-            logger.warning("Alembic migration warning: %s — falling back to create_all", result.stderr.strip())
-            await create_tables()
+            logger.warning("Alembic migration warning: %s", result.stderr.strip())
     except Exception as exc:
-        logger.warning("Could not run Alembic (%s) — using create_all fallback", exc)
-        await create_tables()
+        logger.warning("Could not run Alembic (%s)", exc)
+    # Always sync schema — create_all is idempotent and covers placeholder migrations
+    await create_tables()
