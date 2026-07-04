@@ -1,6 +1,3 @@
-[build]
-builder = "nixpacks"
-
 [deploy]
 # Railway injects $PORT automatically — we read it in run.py / config.py
 startCommand = "python run.py"
