@@ -11,7 +11,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from app.config import settings
 from app.database import create_tables, run_migrations
-from app.routers import auth, users, stocks, portfolios, watchlist, payments, alerts, notifications, exports, admin, bonds
+from app.routers import auth, users, stocks, portfolios, watchlist, payments, alerts, notifications, exports, admin, bonds, ai
 from app.services.ngx_scraper import run_scraper_once
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -174,6 +174,7 @@ app.include_router(alerts.router)
 app.include_router(notifications.router)
 app.include_router(exports.router)
 app.include_router(bonds.router)
+app.include_router(ai.router)
 app.include_router(admin.router)
 
 
