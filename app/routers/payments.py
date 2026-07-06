@@ -1,6 +1,8 @@
 """Flutterwave payment & subscription router."""
 import json
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
@@ -81,6 +83,48 @@ async def flutterwave_webhook(request: Request, db: AsyncSession = Depends(get_d
 
     await handle_webhook(payload, db)
     return {"status": "ok"}
+
+
+class FundAccountRequest(BaseModel):
+    amount: int  # NGN amount
+
+
+@router.post("/fund-account")
+async def fund_account(
+    body: FundAccountRequest,
+    user: User = Depends(get_current_user),
+):
+    """Initiate a Flutterwave payment to deposit real funds into the user's trading account."""
+    if body.amount < 1000:
+        raise HTTPException(status_code=400, detail="Minimum deposit is ₦1,000")
+
+    if not settings.FLW_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Payment gateway not configured")
+
+    from app.services.flutterwave import make_tx_ref, FLW_HEADERS, FLW_API
+    tx_ref = make_tx_ref()
+
+    payload = {
+        "tx_ref": tx_ref,
+        "amount": body.amount,
+        "currency": "NGN",
+        "redirect_url": f"{settings.FRONTEND_URL}/trading?funded=1&tx_ref={tx_ref}",
+        "customer": {"email": user.email, "name": user.name},
+        "customizations": {
+            "title": "KB & Co Trading Account",
+            "description": "Deposit to Real Trading Account",
+            "logo": f"{settings.FRONTEND_URL}/logo.png",
+        },
+        "meta": {"purpose": "account_funding", "user_id": user.id, "amount": body.amount},
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{FLW_API}/payments", headers=FLW_HEADERS, json=payload)
+        data = resp.json()
+        if not resp.is_success or data.get("status") != "success":
+            raise HTTPException(status_code=502, detail="Payment gateway error. Please try again.")
+
+    return {"payment_link": data["data"]["link"], "tx_ref": tx_ref}
 
 
 @router.get("/history", response_model=List[PaymentOut])

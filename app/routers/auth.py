@@ -154,6 +154,28 @@ async def get_me(user: User = Depends(get_current_user)):
     return user
 
 
+ADMIN_EMAIL = "admin@kbco.invest"
+ADMIN_DEFAULT_PASSWORD = "KBCo@Admin2026!"
+
+
+@router.post("/seed-admin", status_code=status.HTTP_201_CREATED)
+async def seed_admin(db: AsyncSession = Depends(get_db)):
+    """One-time endpoint to create the admin account if it doesn't already exist."""
+    result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
+    if result.scalar_one_or_none():
+        return {"detail": "Admin account already exists"}
+
+    admin = User(
+        id=str(uuid.uuid4()),
+        email=ADMIN_EMAIL,
+        name="KB & Co Admin",
+        hashed_password=hash_password(ADMIN_DEFAULT_PASSWORD),
+    )
+    db.add(admin)
+    await db.commit()
+    return {"detail": "Admin account created", "email": ADMIN_EMAIL, "password": ADMIN_DEFAULT_PASSWORD}
+
+
 @router.get("/google/url")
 async def google_auth_url():
     """Return the Google OAuth URL the frontend should redirect to."""
