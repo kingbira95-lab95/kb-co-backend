@@ -27,6 +27,8 @@ class TokenResponse(BaseModel):
     name: str
     plan: str
     kyc_status: str
+    trading_account_id: Optional[str] = None
+    is_admin: bool = False
 
 
 class RefreshRequest(BaseModel):

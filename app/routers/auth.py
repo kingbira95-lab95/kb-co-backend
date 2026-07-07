@@ -21,6 +21,9 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 
 def _make_token_response(user: User) -> TokenResponse:
+    from datetime import datetime, timezone
+    year = datetime.now(timezone.utc).year
+    trading_id = f"KBC-{year}-{user.id[-4:].upper()}" if user.kyc_status.value == "verified" else None
     return TokenResponse(
         access_token=create_access_token(user.id),
         refresh_token=create_refresh_token(user.id),
@@ -30,6 +33,8 @@ def _make_token_response(user: User) -> TokenResponse:
         name=user.name,
         plan=user.plan.value,
         kyc_status=user.kyc_status.value,
+        trading_account_id=trading_id,
+        is_admin=user.is_admin,
     )
 
 
@@ -160,9 +165,15 @@ ADMIN_DEFAULT_PASSWORD = "KBCo@Admin2026!"
 
 @router.post("/seed-admin", status_code=status.HTTP_201_CREATED)
 async def seed_admin(db: AsyncSession = Depends(get_db)):
-    """One-time endpoint to create the admin account if it doesn't already exist."""
+    """Create or repair the admin account — idempotent."""
     result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
-    if result.scalar_one_or_none():
+    existing = result.scalar_one_or_none()
+    if existing:
+        # Ensure is_admin flag is set (repairs previously created account)
+        if not existing.is_admin:
+            existing.is_admin = True
+            await db.commit()
+            return {"detail": "Admin account repaired — is_admin set to true", "email": ADMIN_EMAIL}
         return {"detail": "Admin account already exists"}
 
     admin = User(
@@ -170,6 +181,7 @@ async def seed_admin(db: AsyncSession = Depends(get_db)):
         email=ADMIN_EMAIL,
         name="KB & Co Admin",
         hashed_password=hash_password(ADMIN_DEFAULT_PASSWORD),
+        is_admin=True,
     )
     db.add(admin)
     await db.commit()
