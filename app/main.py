@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         run_scraper_once,
         "interval",
-        minutes=60,  # Live price update every 60 minutes from NGX equities price list
+        minutes=30,  # Live prices every 30 min from NGX price list + TradingView Nigeria
         id="ngx_scraper",
         replace_existing=True,
     )
@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
     )
 
     scheduler.start()
-    logger.info(f"Scheduler started — NGX scrape every {settings.NGX_SCRAPE_INTERVAL_MINUTES} min")
+    logger.info("Scheduler started — NGX + TradingView price scrape every 30 min")
 
     yield
 

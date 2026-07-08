@@ -233,6 +233,15 @@ async def broadcast_notification(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a notification to all active users."""
+    # Map friendly frontend types onto the notification enum so a bad
+    # type never 500s the whole broadcast (e.g. "market" -> news).
+    try:
+        notif_type = NotifTypeEnum(body.type)
+    except ValueError:
+        notif_type = {"market": NotifTypeEnum.news, "report": NotifTypeEnum.news}.get(
+            body.type, NotifTypeEnum.system
+        )
+
     result = await db.execute(select(User).where(User.is_active == True))
     users = result.scalars().all()
 
@@ -240,7 +249,7 @@ async def broadcast_notification(
         Notification(
             id=str(uuid.uuid4()),
             user_id=u.id,
-            type=NotifTypeEnum(body.type),
+            type=notif_type,
             title=body.title,
             message=body.message,
         )

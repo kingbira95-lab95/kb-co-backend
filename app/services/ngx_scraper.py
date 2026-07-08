@@ -9,6 +9,7 @@ Updates the stock_cache table every NGX_SCRAPE_INTERVAL_MINUTES minutes (default
 """
 import asyncio
 import logging
+import re
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -27,6 +28,12 @@ logger = logging.getLogger(__name__)
 # ── Sources ────────────────────────────────────────────────────────────────────
 
 NGX_URL = "https://ngxgroup.com/exchange/data/equities-price-list/"
+
+# Official JSON API that feeds the NGX equities price-list table
+NGX_API_URL = (
+    "https://doclib.ngxgroup.com/REST/api/statistics/equities/"
+    "?market=&sector=&orderby=&pageSize=300&pageNo=0"
+)
 
 TV_SCREENER_URL = "https://scanner.tradingview.com/nigeria/scan"
 
@@ -145,7 +152,16 @@ async def fetch_tradingview_stocks() -> list[dict]:
 # ── NGX official scraper ───────────────────────────────────────────────────────
 
 async def scrape_ngx() -> list[dict]:
-    """Fetch and parse the NGX equities price list (official close prices)."""
+    """
+    Fetch official NGX prices. Primary: the doclib JSON API that feeds the
+    equities-price-list page (structured, includes sector). Fallback: parse
+    the HTML table on the page itself.
+    """
+    stocks = await _fetch_ngx_api()
+    if stocks:
+        return stocks
+
+    logger.warning("NGX JSON API returned nothing — falling back to HTML parse")
     try:
         async with httpx.AsyncClient(timeout=30, headers=HEADERS, follow_redirects=True) as client:
             response = await client.get(NGX_URL)
@@ -156,7 +172,80 @@ async def scrape_ngx() -> list[dict]:
     return _parse_ngx_html(response.text)
 
 
+async def _fetch_ngx_api() -> list[dict]:
+    """Official NGX equities API — returns ~146 stocks with sector data."""
+    try:
+        async with httpx.AsyncClient(timeout=30, headers={**HEADERS, "Accept": "application/json"}, follow_redirects=True) as client:
+            response = await client.get(NGX_API_URL)
+            response.raise_for_status()
+            data = response.json()
+    except Exception as e:
+        logger.error(f"NGX API error: {e}")
+        return []
+
+    if not isinstance(data, list):
+        logger.warning("NGX API returned unexpected shape — expected a list")
+        return []
+
+    stocks: list[dict] = []
+    for row in data:
+        try:
+            symbol = (row.get("Symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            prev_close = row.get("PrevClosingPrice")
+            close = row.get("ClosePrice")
+            traded = close is not None and close > 0
+            price = close if traded else prev_close
+            if price is None or price <= 0:
+                continue
+
+            change = row.get("Change") or 0.0
+            change_pct = row.get("PercChange")
+            if change_pct is None:
+                change_pct = (change / prev_close * 100) if (traded and prev_close) else 0.0
+
+            sector_raw = (row.get("Sector") or "").strip()
+            sector = sector_raw.title() if sector_raw else SECTOR_MAP.get(symbol)
+            name = (row.get("Company2") or symbol).strip()
+
+            stocks.append({
+                "symbol": symbol,
+                "name": name,
+                "sector": sector,
+                "price": float(price),
+                "prev_close": float(prev_close) if prev_close else None,
+                "change_abs": float(change),
+                "change_pct": round(float(change_pct), 2),
+                "volume": float(row.get("Volume") or 0),
+                "traded_today": traded,
+                "updated_at": datetime.now(timezone.utc),
+            })
+        except (TypeError, ValueError):
+            continue
+
+    logger.info(f"NGX official API: {len(stocks)} stocks fetched")
+    return stocks
+
+
+def _ngx_num(text: str) -> Optional[float]:
+    """Parse an NGX table cell into a float. '--', '♦', arrows etc. -> None."""
+    cleaned = re.sub(r"[^\d.\-]", "", text or "")
+    if not cleaned or cleaned in ("-", ".", "-."):
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def _parse_ngx_html(html: str) -> list[dict]:
+    """
+    Parse the NGX equities price list table. Actual column layout:
+    Company | Previous Closing Price | Opening Price | High | Low | Close |
+    Change | Trades | Volume | Value | Trade Date
+    Columns are located by header text so minor reordering doesn't break us.
+    """
     soup = BeautifulSoup(html, "lxml")
     stocks = []
     table = soup.find("table")
@@ -164,41 +253,57 @@ def _parse_ngx_html(html: str) -> list[dict]:
         logger.warning("No table found in NGX HTML — site structure may have changed")
         return []
 
+    headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+
+    def find_col(pred, default: int) -> int:
+        for i, h in enumerate(headers):
+            if pred(h):
+                return i
+        return default
+
+    i_company = find_col(lambda h: "company" in h or "symbol" in h, 0)
+    i_prev = find_col(lambda h: "previous" in h, 1)
+    i_close = find_col(lambda h: h == "close" or (h.startswith("clos") and "previous" not in h), 5)
+    i_change = find_col(lambda h: h.startswith("change"), 6)
+    i_volume = find_col(lambda h: "volume" in h, 8)
+
     rows = table.find_all("tr")[1:]
     for row in rows:
         cells = row.find_all("td")
-        if len(cells) < 6:
+        if len(cells) <= max(i_company, i_prev, i_close):
             continue
         try:
-            symbol = cells[0].get_text(strip=True).upper()
-            name = cells[1].get_text(strip=True)
-            price_text = cells[2].get_text(strip=True).replace(",", "")
-            prev_close_text = cells[3].get_text(strip=True).replace(",", "")
-            change_text = cells[4].get_text(strip=True).replace(",", "")
-            change_pct_text = cells[5].get_text(strip=True).replace("%", "").replace(",", "")
+            raw_symbol = cells[i_company].get_text(strip=True).upper()
+            # Strip market-flag tags like "CAVERTON [MRF]" / "ALEX [BMF]"
+            symbol = re.sub(r"\s*\[.*?\]\s*", "", raw_symbol).strip()
+            if not symbol:
+                continue
 
-            price = float(price_text) if price_text else 0.0
-            prev_close = float(prev_close_text) if prev_close_text else price
-            change = float(change_text) if change_text else 0.0
-            change_pct = float(change_pct_text) if change_pct_text else 0.0
+            prev_close = _ngx_num(cells[i_prev].get_text(strip=True))
+            close = _ngx_num(cells[i_close].get_text(strip=True))
+            change = _ngx_num(cells[i_change].get_text(strip=True)) if len(cells) > i_change else None
+            volume = _ngx_num(cells[i_volume].get_text(strip=True)) if len(cells) > i_volume else None
 
-            volume = 0.0
-            if len(cells) > 7:
-                vol_text = cells[6].get_text(strip=True).replace(",", "")
-                try:
-                    volume = float(vol_text)
-                except ValueError:
-                    pass
+            # Only rows with an actual traded Close carry a fresh price;
+            # untraded rows ('--') would just echo yesterday's close.
+            traded = close is not None and close > 0
+            price = close if traded else prev_close
+            if price is None or price <= 0:
+                continue
+
+            change_abs = change if change is not None else (close - prev_close if traded and prev_close else 0.0)
+            change_pct = (change_abs / prev_close * 100) if prev_close else 0.0
 
             stocks.append({
                 "symbol": symbol,
-                "name": name,
+                "name": symbol.title(),
                 "sector": SECTOR_MAP.get(symbol),
                 "price": price,
                 "prev_close": prev_close,
-                "change_abs": change,
-                "change_pct": change_pct,
-                "volume": volume,
+                "change_abs": change_abs,
+                "change_pct": round(change_pct, 2),
+                "volume": volume or 0.0,
+                "traded_today": traded,
                 "updated_at": datetime.now(timezone.utc),
             })
         except (ValueError, IndexError):
@@ -274,11 +379,14 @@ async def run_scraper_once() -> int:
     for s in ngx_stocks:
         sym = s["symbol"]
         if sym in merged:
-            # Trust NGX Group for price, prev_close, change; keep TV for PE/EPS/52w etc.
-            merged[sym]["price"] = s["price"]
-            merged[sym]["prev_close"] = s.get("prev_close")
-            merged[sym]["change_abs"] = s.get("change_abs", merged[sym].get("change_abs", 0))
-            merged[sym]["change_pct"] = s.get("change_pct", merged[sym].get("change_pct", 0))
+            merged[sym]["prev_close"] = s.get("prev_close") or merged[sym].get("prev_close")
+            if not merged[sym].get("sector") and s.get("sector"):
+                merged[sym]["sector"] = s["sector"]
+            if s.get("traded_today"):
+                # Trust NGX official traded price; keep TV for PE/EPS/52w etc.
+                merged[sym]["price"] = s["price"]
+                merged[sym]["change_abs"] = s.get("change_abs", merged[sym].get("change_abs", 0))
+                merged[sym]["change_pct"] = s.get("change_pct", merged[sym].get("change_pct", 0))
             if s.get("volume"):
                 merged[sym]["volume"] = s["volume"]
         else:
