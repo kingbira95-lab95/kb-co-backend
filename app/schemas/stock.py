@@ -1,6 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from typing import Optional
 from datetime import datetime
+
+from app.data.logo_manifest import logo_url_for
 
 
 class StockOut(BaseModel):
@@ -23,6 +25,12 @@ class StockOut(BaseModel):
     high_52w: Optional[float]
     low_52w: Optional[float]
     updated_at: Optional[datetime]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def logo_url(self) -> Optional[str]:
+        """Absolute URL to this stock's company logo served by the backend."""
+        return logo_url_for(self.symbol)
 
     class Config:
         from_attributes = True

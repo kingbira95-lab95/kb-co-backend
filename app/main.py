@@ -2,12 +2,14 @@
 KB & Co Corporate Investment Limited — FastAPI Backend
 """
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import create_tables, run_migrations
@@ -176,6 +178,13 @@ app.include_router(exports.router)
 app.include_router(bonds.router)
 app.include_router(ai.router)
 app.include_router(admin.router)
+
+# ── Static company logos ───────────────────────────────────────────────────────
+# Serves NGX company logos at /logos/<SYMBOL>.<ext> (e.g. /logos/GTCO.png).
+# Files live in app/static/logos/ and are bundled into the image (Dockerfile COPY . .).
+_logos_dir = os.path.join(os.path.dirname(__file__), "static", "logos")
+os.makedirs(_logos_dir, exist_ok=True)
+app.mount("/logos", StaticFiles(directory=_logos_dir), name="logos")
 
 
 @app.get("/")
